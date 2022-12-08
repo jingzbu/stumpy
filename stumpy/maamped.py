@@ -2,11 +2,15 @@
 # Copyright 2019 TD Ameritrade. Released under the terms of the 3-Clause BSD license.
 # STUMPY is a trademark of TD Ameritrade IP Company, Inc. All rights reserved.
 
+import logging
+
 import numpy as np
 
 from .maamp import _maamp, _get_first_maamp_profile, _get_multi_p_norm
 from .mstump import _preprocess_include
 from . import core, config
+
+logger = logging.getLogger(__name__)
 
 
 def maamped(dask_client, T, m, include=None, discords=False, p=2.0):
@@ -162,5 +166,16 @@ def maamped(dask_client, T, m, include=None, discords=False, p=2.0):
     for i, start in enumerate(range(0, k, step)):
         stop = min(k, start + step)
         P[:, start + 1 : stop], I[:, start + 1 : stop] = results[i]
+
+    # Delete data from Dask cluster
+    dask_client.cancel(T_A_future)
+    dask_client.cancel(T_A_subseq_isfinite_future)
+    dask_client.cancel(T_B_subseq_isfinite_future)
+    for p_norm_future in p_norm_futures:
+        dask_client.cancel(p_norm_future)
+    for p_norm_first_future in p_norm_first_futures:
+        dask_client.cancel(p_norm_first_future)
+    for future in futures:
+        dask_client.cancel(future)
 
     return P, I

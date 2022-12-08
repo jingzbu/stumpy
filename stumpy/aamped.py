@@ -2,14 +2,17 @@
 # Copyright 2019 TD Ameritrade. Released under the terms of the 3-Clause BSD license.
 # STUMPY is a trademark of TD Ameritrade IP Company, Inc. All rights reserved.
 
+import logging
+
 import numpy as np
 
 from . import core, config
 from .aamp import _aamp
 
+logger = logging.getLogger(__name__)
 
-def aamped(dask_client, T_A, m, T_B=None, ignore_trivial=True, p=2.0, k=1):
-    # function needs to be revised to return top-k matrix profile
+
+def aamped(dask_client, T_A, m, T_B=None, ignore_trivial=True, p=2.0):
     """
     Compute the non-normalized (i.e., without z-normalization) matrix profile
 
@@ -43,24 +46,11 @@ def aamped(dask_client, T_A, m, T_B=None, ignore_trivial=True, p=2.0, k=1):
     p : float, default 2.0
         The p-norm to apply for computing the Minkowski distance.
 
-    k : int, default 1
-        The number of top `k` smallest distances used to construct the matrix profile.
-        Note that this will increase the total computational time and memory usage
-        when k > 1.
-
     Returns
     -------
     out : numpy.ndarray
-        When k = 1 (default), the first column consists of the matrix profile,
-        the second column consists of the matrix profile indices, the third column
-        consists of the left matrix profile indices, and the fourth column consists
-        of the right matrix profile indices. However, when k > 1, the output array
-        will contain exactly 2 * k + 2 columns. The first k columns (i.e., out[:, :k])
-        consists of the top-k matrix profile, the next set of k columns
-        (i.e., out[:, k:2k]) consists of the corresponding top-k matrix profile
-        indices, and the last two columns (i.e., out[:, 2k] and out[:, 2k+1] or,
-        equivalently, out[:, -2] and out[:, -1]) correspond to the top-1 left
-        matrix profile indices and the top-1 right matrix profile indices, respectively.
+        The first column consists of the matrix profile, the second column
+        consists of the matrix profile indices.
 
     Notes
     -----
@@ -85,16 +75,25 @@ def aamped(dask_client, T_A, m, T_B=None, ignore_trivial=True, p=2.0, k=1):
         raise ValueError(f"T_B is {T_B.ndim}-dimensional and must be 1-dimensional. ")
 
     core.check_window_size(m, max_size=min(T_A.shape[0], T_B.shape[0]))
-    ignore_trivial = core.check_ignore_trivial(T_A, T_B, ignore_trivial)
+
+    if ignore_trivial is False and core.are_arrays_equal(T_A, T_B):  # pragma: no cover
+        logger.warning("Arrays T_A, T_B are equal, which implies a self-join.")
+        logger.warning("Try setting `ignore_trivial = True`.")
+
+    if ignore_trivial and core.are_arrays_equal(T_A, T_B) is False:  # pragma: no cover
+        logger.warning("Arrays T_A, T_B are not equal, which implies an AB-join.")
+        logger.warning("Try setting `ignore_trivial = False`.")
 
     n_A = T_A.shape[0]
     n_B = T_B.shape[0]
     l = n_A - m + 1
 
+    excl_zone = int(np.ceil(m / config.STUMPY_EXCL_ZONE_DENOM))
+    out = np.empty((l, 4), dtype=object)
+
     hosts = list(dask_client.ncores().keys())
     nworkers = len(hosts)
 
-    excl_zone = int(np.ceil(m / config.STUMPY_EXCL_ZONE_DENOM))
     if ignore_trivial:
         diags = np.arange(excl_zone + 1, n_A - m + 1, dtype=np.int64)
     else:
@@ -136,31 +135,34 @@ def aamped(dask_client, T_A, m, T_B=None, ignore_trivial=True, p=2.0, k=1):
                 p,
                 diags_futures[i],
                 ignore_trivial,
-                k,
             )
         )
 
     results = dask_client.gather(futures)
-    profile, profile_L, profile_R, indices, indices_L, indices_R = results[0]
+    profile, indices = results[0]
     for i in range(1, len(hosts)):
-        P, PL, PR, I, IL, IR = results[i]
-        # Update top-k matrix profile and matrix profile indices
-        core._merge_topk_PI(profile, P, indices, I)
+        P, I = results[i]
+        for col in range(P.shape[1]):  # pragma: no cover
+            cond = P[:, col] < profile[:, col]
+            profile[:, col] = np.where(cond, P[:, col], profile[:, col])
+            indices[:, col] = np.where(cond, I[:, col], indices[:, col])
 
-        # Update top-1 left matrix profile and matrix profile index
-        mask = PL < profile_L
-        profile_L[mask] = PL[mask]
-        indices_L[mask] = IL[mask]
+    out[:, 0] = profile[:, 0]
+    out[:, 1:4] = indices
 
-        # Update top-1 right matrix profile and matrix profile index
-        mask = PR < profile_R
-        profile_R[mask] = PR[mask]
-        indices_R[mask] = IR[mask]
+    # Delete data from Dask cluster
+    dask_client.cancel(T_A_future)
+    dask_client.cancel(T_B_future)
+    dask_client.cancel(T_A_subseq_isfinite_future)
+    dask_client.cancel(T_B_subseq_isfinite_future)
+    for diags_future in diags_futures:
+        dask_client.cancel(diags_future)
+    for future in futures:
+        dask_client.cancel(future)
 
-    out = np.empty((l, 2 * k + 2), dtype=object)
-    out[:, :k] = profile
-    out[:, k : 2 * k + 2] = np.column_stack((indices, indices_L, indices_R))
-
-    core._check_P(out[:, 0])
+    threshold = 10e-6
+    if core.are_distances_too_small(out[:, 0], threshold=threshold):  # pragma: no cover
+        logger.warning(f"A large number of values are smaller than {threshold}.")
+        logger.warning("For a self-join, try setting `ignore_trivial = True`.")
 
     return out

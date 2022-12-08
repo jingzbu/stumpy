@@ -2,7 +2,7 @@
 # Copyright 2019 TD Ameritrade. Released under the terms of the 3-Clause BSD license.
 # STUMPY is a trademark of TD Ameritrade IP Company, Inc. All rights reserved.
 
-import warnings
+import logging
 
 import numpy as np
 from scipy.stats import norm
@@ -11,6 +11,8 @@ from functools import lru_cache, partial
 
 from . import core, config
 from .maamp import maamp_multi_distance_profile, maamp, maamp_subspace, maamp_mdl
+
+logger = logging.getLogger(__name__)
 
 
 def _preprocess_include(include):
@@ -35,7 +37,7 @@ def _preprocess_include(include):
     include = np.asarray(include)
     _, idx = np.unique(include, return_index=True)
     if include.shape[0] != idx.shape[0]:  # pragma: no cover
-        warnings.warn("Removed repeating indices in `include`")
+        logger.warning("Removed repeating indices in `include`")
         include = include[np.sort(idx)]
 
     return include
@@ -1005,7 +1007,7 @@ def _mstump(
 
     Parameters
     ----------
-    T : numpy.ndarray
+    T: numpy.ndarray
         The time series or sequence for which to compute the multi-dimensional
         matrix profile
 

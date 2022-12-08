@@ -85,10 +85,8 @@ def allc(IL, IR):
         All-chain set
 
     C : numpy.ndarray
-        Anchored time series chain for the longest chain (also known as the unanchored
-        chain). Note that when there are multiple different chains with length equal to
-        `len(C)`, then only one chain from this set is returned. You may iterate over
-        the all-chain set, `S`, to find all other possible chains with length `len(C)`.
+        Anchored time series chain for the longest chain (also known as the
+        unanchored chain)
 
     See Also
     --------

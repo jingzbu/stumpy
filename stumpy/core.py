@@ -2,12 +2,12 @@
 # Copyright 2019 TD Ameritrade. Released under the terms of the 3-Clause BSD license.  # noqa: E501
 # STUMPY is a trademark of TD Ameritrade IP Company, Inc. All rights reserved.
 
-import warnings
+import logging
 import functools
 import inspect
 
 import numpy as np
-from numba import njit, cuda
+from numba import njit
 from scipy.signal import convolve
 from scipy.ndimage import maximum_filter1d, minimum_filter1d
 from scipy import linalg
@@ -21,6 +21,8 @@ try:
     from numba.cuda.cudadrv.driver import _raise_driver_not_found
 except ImportError:
     pass
+
+logger = logging.getLogger(__name__)
 
 
 def _compare_parameters(norm, non_norm, exclude=None):
@@ -58,13 +60,11 @@ def _compare_parameters(norm, non_norm, exclude=None):
 
     is_same_params = set(norm_params) == set(non_norm_params)
     if not is_same_params:
-        msg = ""
-        if exclude is not None or (isinstance(exclude, list) and len(exclude)):
-            msg += f"Excluding `{exclude}` parameters, "
-        msg += f"function `{norm.__name__}({norm_params}) and "
-        msg += f"function `{non_norm.__name__}({non_norm_params}) "
-        msg += "have different arguments/parameters."
-        warnings.warn(msg)
+        if exclude is not None:
+            logger.warning(f"Excluding `{exclude}` parameters, ")
+        logger.warning(f"`{norm}`: ({norm_params}) and ")
+        logger.warning(f"`{non_norm}`: ({non_norm_params}) ")
+        logger.warning("have different parameters.")
 
     return is_same_params
 
@@ -209,20 +209,6 @@ def _gpu_aamp_stimp_driver_not_found(*args, **kwargs):  # pragma: no cover
     driver_not_found()
 
 
-def _gpu_searchsorted_left_driver_not_found(*args, **kwargs):  # pragma: no cover
-    """
-    Dummy function to raise CudaSupportError driver not found error.
-    """
-    driver_not_found()
-
-
-def _gpu_searchsorted_right_driver_not_found(*args, **kwargs):  # pragma: no cover
-    """
-    Dummy function to raise CudaSupportError driver not found error.
-    """
-    driver_not_found()
-
-
 def get_pkg_name():  # pragma: no cover
     """
     Return package name.
@@ -254,7 +240,7 @@ def rolling_window(a, window):
     return np.lib.stride_tricks.as_strided(a, shape=shape, strides=strides)
 
 
-def z_norm(a, axis=0, threshold=config.STUMPY_STDDEV_THRESHOLD):
+def z_norm(a, axis=0):
     """
     Calculate the z-normalized input array `a` by subtracting the mean and
     dividing by the standard deviation along a given axis.
@@ -267,16 +253,13 @@ def z_norm(a, axis=0, threshold=config.STUMPY_STDDEV_THRESHOLD):
     axis : int, default 0
         NumPy array axis
 
-    threshold : float, default to config.STUMPY_STDDEV_THRESHOLD
-        A non-nan std value being less than `threshold` will be replaced with 1.0
-
     Returns
     -------
     output : numpy.ndarray
         An array with z-normalized values computed along a specified axis.
     """
     std = np.std(a, axis, keepdims=True)
-    std[np.less(std, threshold, where=~np.isnan(std))] = 1.0
+    std[std == 0] = 1
 
     return (a - np.mean(a, axis, keepdims=True)) / std
 
@@ -383,7 +366,7 @@ def are_arrays_equal(a, b):  # pragma: no cover
     if a.shape != b.shape:
         return False
 
-    return bool(((a == b) | (np.isnan(a) & np.isnan(b))).all())
+    return ((a == b) | (np.isnan(a) & np.isnan(b))).all()
 
 
 def are_distances_too_small(a, threshold=10e-6):  # pragma: no cover
@@ -1152,15 +1135,13 @@ def mass_absolute(Q, T, T_subseq_isfinite=None, p=2.0):
     """
     Q = _preprocess(Q)
     m = Q.shape[0]
+    check_window_size(m, max_size=Q.shape[-1])
 
     if Q.ndim == 2 and Q.shape[1] == 1:  # pragma: no cover
-        warnings.warn("`Q` must be 1-dimensional and was automatically flattened")
         Q = Q.flatten()
 
     if Q.ndim != 1:  # pragma: no cover
-        raise ValueError(f"`Q` is {Q.ndim}-dimensional and must be 1-dimensional. ")
-
-    check_window_size(m, max_size=Q.shape[-1])
+        raise ValueError(f"Q is {Q.ndim}-dimensional and must be 1-dimensional. ")
 
     T = _preprocess(T)
     n = T.shape[0]
@@ -1357,15 +1338,7 @@ def _mass(Q, T, QT, μ_Q, σ_Q, M_T, Σ_T):
     exclude=["normalize", "M_T", "Σ_T", "T_subseq_isfinite", "p"],
     replace={"M_T": "T_subseq_isfinite", "Σ_T": None},
 )
-def mass(
-    Q,
-    T,
-    M_T=None,
-    Σ_T=None,
-    normalize=True,
-    p=2.0,
-    T_subseq_isfinite=None,
-):
+def mass(Q, T, M_T=None, Σ_T=None, normalize=True, p=2.0):
     """
     Compute the distance profile using the MASS algorithm
 
@@ -1393,11 +1366,6 @@ def mass(
     p : float, default 2.0
         The p-norm to apply for computing the Minkowski distance. This parameter is
         ignored when `normalize == True`.
-
-    T_subseq_isfinite : numpy.ndarray
-        A boolean array that indicates whether a subsequence in `T` contains a
-        `np.nan`/`np.inf` value (False). This parameter is ignored when
-        `normalize=True`.
 
     Returns
     -------
@@ -1430,15 +1398,13 @@ def mass(
     """
     Q = _preprocess(Q)
     m = Q.shape[0]
+    check_window_size(m, max_size=Q.shape[-1])
 
     if Q.ndim == 2 and Q.shape[1] == 1:  # pragma: no cover
-        warnings.warn("`Q` must be 1-dimensional and was automatically flattened")
         Q = Q.flatten()
 
     if Q.ndim != 1:  # pragma: no cover
         raise ValueError(f"Q is {Q.ndim}-dimensional and must be 1-dimensional. ")
-
-    check_window_size(m, max_size=Q.shape[-1])
 
     T = _preprocess(T)
     n = T.shape[0]
@@ -1471,7 +1437,7 @@ def mass(
     return distance_profile
 
 
-def _mass_distance_matrix(Q, T, m, distance_matrix, μ_Q, σ_Q, M_T, Σ_T):
+def _mass_distance_matrix(Q, T, m, distance_matrix):
     """
     Compute the full distance matrix between all of the subsequences of `Q` and `T`
     using the MASS algorithm
@@ -1490,74 +1456,22 @@ def _mass_distance_matrix(Q, T, m, distance_matrix, μ_Q, σ_Q, M_T, Σ_T):
     distance_matrix : numpy.ndarray
         The full output distance matrix. This is mandatory since it may be reused.
 
-    μ_Q : numpy.ndarray
-        Sliding mean of `Q`
-
-    σ_Q : numpy.ndarray
-        Sliding standard deviation of `Q`
-
-    M_T : numpy.ndarray
-        Sliding mean of `T`
-
-    Σ_T : numpy.ndarray
-        Sliding standard deviation of `T`
-
     Returns
     -------
         None
     """
-    for i in range(distance_matrix.shape[0]):
-        if np.any(~np.isfinite(Q[i : i + m])):  # pragma: no cover
-            distance_matrix[i, :] = np.inf
-        else:
-            QT = _sliding_dot_product(Q[i : i + m], T)
-            distance_matrix[i, :] = _mass(Q[i : i + m], T, QT, μ_Q[i], σ_Q[i], M_T, Σ_T)
+    k, l = distance_matrix.shape
+    T, M_T, Σ_T = preprocess(T, m)
 
-
-def mass_distance_matrix(Q, T, m, distance_matrix, M_T=None, Σ_T=None):
-    """
-    Compute the full distance matrix between all of the subsequences of `Q` and `T`
-    using the MASS algorithm
-
-    Parameters
-    ----------
-    Q : numpy.ndarray
-        Query array
-
-    T : numpy.ndarray
-        Time series or sequence
-
-    m : int
-        Window size
-
-    distance_matrix : numpy.ndarray
-        The full output distance matrix. This is mandatory since it may be reused.
-
-    M_T : numpy.ndarray, default None
-        Sliding mean of `T`
-
-    Σ_T : numpy.ndarray, default None
-        Sliding standard deviation of `T`
-
-    Returns
-    -------
-        None
-    """
-    Q, μ_Q, σ_Q = preprocess(Q, m)
-
-    if M_T is None or Σ_T is None:
-        T, M_T, Σ_T = preprocess(T, m)
-
-    check_window_size(m, max_size=min(Q.shape[-1], T.shape[-1]))
-
-    return _mass_distance_matrix(Q, T, m, distance_matrix, μ_Q, σ_Q, M_T, Σ_T)
+    for i in range(k):
+        distance_matrix[i, :] = mass(Q[i : i + m], T, M_T, Σ_T)
 
 
 def _get_QT(start, T_A, T_B, m):
     """
-    Compute the sliding dot product between the query, `T_B`, (from
-    [start:start+m]) and the time series, `T_A`. Additionally, compute
-    QT for the first window `T_A[:m]` and `T_B`.
+    Compute the sliding dot product between the query, `T_A`, (from
+    [start:start+m]) and the time series, `T_B`. Additionally, compute
+    QT for the first window.
 
     Parameters
     ----------
@@ -1744,15 +1658,17 @@ def preprocess_diagonal(T, m):
     Preprocess a time series that is to be used when traversing the diagonals of a
     distance matrix.
 
-    Creates a copy of the time series where all NaN and inf values are replaced
-    with zero. Also computes means, `M_T` and `M_T_m_1`, for every subsequence
-    using a window size of `m` and `m-1`, respectively, and the inverse standard
-    deviation, `Σ_T_inverse`. Every subsequence that contains at least one NaN or
-    inf value will have a `False` value in its `T_subseq_isfinite` `bool` array.
-    Additionally, the inverse standard deviation, σ_inverse, will also be computed
-    and returned. Finally, constant subsequences (i.e., subsequences with a standard
-    deviation of zero), will have a corresponding `True` value in its
-    `T_subseq_isconstant` array.
+    Creates a copy of the time series where all NaN and inf values
+    are replaced with zero. Also computes means, `M_T` and `M_T_m_1`, for every
+    subsequence using awindow size of `m` and `m-1`, respectively, and the inverse
+    standard deviation, `Σ_T_inverse`. Every subsequence that contains at least
+    one NaN or inf value will have a `False` value in its `T_subseq_isfinite` `bool`
+    arra and it will also have a mean of np.inf. For the standard
+    deviation these values are ignored. If all values are illegal, the
+    standard deviation will be 0 (see `core.compute_mean_std`). Additionally,
+    the inverse standard deviation, σ_inverse, will also be computed and returned.
+    Finally, constant subsequences (i.e., subsequences with a standard deviation of
+    zero), will have a corresponding `True` value in its `T_subseq_isconstant` array.
 
     Parameters
     ----------
@@ -2341,7 +2257,7 @@ def _total_diagonal_ndists(tile_lower_diag, tile_upper_diag, tile_height, tile_w
     return int(total_diagonal_ndists)
 
 
-def _bfs_indices(n, fill_value=None):
+def _bfs_indices(n):
     """
     Generate the level order indices from the implicit construction of a binary
     search tree followed by a breadth first (level order) search.
@@ -2361,70 +2277,18 @@ def _bfs_indices(n, fill_value=None):
         *   *       *   *
        *     *     *     *
       1       4   7       9
-     *       *   *
-    0       3   6
+     * *     *
+    0   3   6
 
     And if we traverse the nodes at each level from left to right then the breadth
     first search indices would be `[5, 2, 8, 1, 4, 7, 9, 0, 3, 6]`. In this function,
     we avoid/skip the explicit construction of the binary tree and directly output
-    the desired indices efficiently. Note that it is not always possible to reconstruct
-    the position of the leaf nodes from the indices alone (i.e., a leaf node could be
-    attached to any parent node from a previous layer). For example, if `n = 9` then
-    the corresponding (zero-based index) balanced binary tree is:
-
-                   4
-                  * *
-                 *   *
-                *     *
-               *       *
-              *         *
-             *           *
-            *             *
-           *               *
-          2                 7
-         * *               * *
-        *   *             *   *
-       *     *           *     *
-      1       3         6       8
-     *                 *
-    0                 5
-
-    And if we traverse the nodes at each level from left to right then the breadth
-    first search indices would be `[4, 2, 7, 1, 3, 6, 8, 0, 5]`. Notice that the parent
-    of index `5` is not index `1` or index `3`. Instead, it is index `6`! So, given only
-    the indices, it is not possible to easily reconstruct the full tree (i.e., whether a
-    given leaf index is a left or right child or which parent node that it should be
-    attached to). Therefore, to reduce the abiguity, you can choose to fill in the
-    missing leaf nodes by specifying a `fill_value = -1`, which will produce a modified
-    set of indices, `[ 4,  2,  7,  1,  3,  6,  8,  0, -1, -1, -1,  5, -1, -1, -1]` and
-    represents the following fully populated tree:
-
-                   4
-                  * *
-                 *   *
-                *     *
-               *       *
-              *         *
-             *           *
-            *             *
-           *               *
-          2                 7
-         * *               * *
-        *   *             *   *
-       *     *           *     *
-      1       3         6       8
-     * *     * *       * *     * *
-    0  -1  -1  -1     5  -1  -1  -1
+    the desired indices efficiently.
 
     Parameters
     ----------
     n : int
         The number indices to generate the ordered indices for
-
-    fill_value : int, default None
-        The integer value to use to fill in any missing leaf nodes. A negative integer
-        is recommended as the only allowable indices being returned will be positive
-        whole numbers.
 
     Returns
     -------
@@ -2466,19 +2330,6 @@ def _bfs_indices(n, fill_value=None):
 
         out[out_idx : out_idx + len(level_indices)] = level_indices
         out_idx += len(level_indices)
-
-    if fill_value is not None and nindices[-1] < np.power(2, nlevel):
-        fill_value = int(fill_value)
-
-        out = out[: -nindices[-1]]
-        last_row = np.empty(np.power(2, nlevel - 1), dtype=np.int64)
-        last_row[0::2] = out[-nindices[-2] :] - 1
-        last_row[1::2] = out[-nindices[-2] :] + 1
-
-        mask = np.isin(last_row, out[: nindices[-2]])
-        last_row[mask] = fill_value
-        last_row[last_row >= n] = fill_value
-        out = np.concatenate([out, last_row])
 
     return out
 
@@ -2543,510 +2394,3 @@ def _binarize_pan(pan, threshold, bfs_indices, n_processed):
     """
     idx = bfs_indices[:n_processed]
     pan[idx] = np.where(pan[idx] <= threshold, 0.0, 1.0)
-
-
-def _select_P_ABBA_value(P_ABBA, k, custom_func=None):
-    """
-    A convenience function for returning the `k`th smallest value from the `P_ABBA`
-    array or use a custom function to specify what `P_ABBA` value to return.
-
-    The MPdist distance measure considers two time series to be similar if they share
-    many subsequences, regardless of the order of matching subsequences. MPdist
-    concatenates the output of an AB-join and a BA-join and returns the `k`th smallest
-    value as the reported distance. Note that MPdist is a measure and not a metric.
-    Therefore, it does not obey the triangular inequality but the method is highly
-    scalable.
-
-    Parameters
-    ----------
-    P_ABBA : numpy.ndarray
-        An unsorted array resulting from the concatenation of the outputs from an
-        AB-joinand BA-join for two time series, `T_A` and `T_B`
-
-    k : int
-        Specify the `k`th value in the concatenated matrix profiles to return. This
-        parameter is ignored when `custom_func` is not None.
-
-    custom_func : object, default None
-        A custom user defined function for selecting the desired value from the
-        unsorted `P_ABBA` array. This function may need to leverage `functools.partial`
-        and should take `P_ABBA` as its only input parameter and return a single
-        `MPdist` value. The `percentage` and `k` parameters are ignored when
-        `custom_func` is not None.
-
-    Returns
-    -------
-    MPdist : float
-        The matrix profile distance
-    """
-    k = min(int(k), P_ABBA.shape[0] - 1)
-    if custom_func is not None:
-        MPdist = custom_func(P_ABBA)
-    else:
-        partition = np.partition(P_ABBA, k)
-        MPdist = partition[k]
-        if ~np.isfinite(MPdist):
-            partition[:k].sort()
-            k = max(0, np.count_nonzero(np.isfinite(partition[:k])) - 1)
-            MPdist = partition[k]
-
-    return MPdist
-
-
-@njit
-def _merge_topk_PI(PA, PB, IA, IB):
-    """
-    Merge two top-k matrix profiles `PA` and `PB`, and update `PA` (in place).
-    When the inputs are 1D arrays, PA[i] is updated if it is greater than PB[i] and
-    IA[i] != IB[i]. In such case, PA[i] and IA[i] are replaced with PB[i] and IB[i],
-    respectively. (Note that it might happen that IA[i]==IB[i] but PA[i] != PB[i].
-    This situation can occur if there is slight imprecision in numerical calculations.
-    In that case, we do not update PA[i] and IA[i]. While updating PA[i] and IA[i]
-    is harmless in this case, we avoid doing that so to be consistent with the merging
-    process when the inputs are 2D arrays)
-    When the inputs are 2D arrays, we always prioritize the values of `PA` over the
-    values of `PB` in case of ties. (i.e., values from `PB` are always inserted to
-    the right of values from `PA`). Also, update `IA` accordingly. In case of
-    overlapping values between two arrays IA[i] and IB[i], the ones in IB[i] (and
-    their corresponding values in PB[i]) are ignored throughout the updating process
-    of IA[i] (and PA[i]).
-
-    Unlike `_merge_topk_ρI`, where `top-k` largest values are kept, this function
-    keeps `top-k` smallest values.
-
-    Parameters
-    ----------
-    PA : numpy.ndarray
-        A (top-k) matrix profile where values in each row are sorted in ascending
-        order. `PA` must be 1- or 2-dimensional.
-
-    PB : numpy.ndarray
-        A (top-k) matrix profile where values in each row are sorted in ascending
-        order. `PB` must have the same shape as `PA`.
-
-    IA : numpy.ndarray
-        A (top-k) matrix profile indices corresponding to `PA`
-
-    IB : numpy.ndarray
-        A (top-k) matrix profile indices corresponding to `PB`
-
-    Returns
-    -------
-    None
-    """
-    if PA.ndim == 1:
-        mask = (PB < PA) & (IB != IA)
-        PA[mask] = PB[mask]
-        IA[mask] = IB[mask]
-    else:
-        k = PA.shape[1]
-        tmp_P = np.empty(k, dtype=np.float64)
-        tmp_I = np.empty(k, dtype=np.int64)
-        for i in range(PA.shape[0]):
-            overlap = set(IB[i]).intersection(set(IA[i]))
-            aj, bj = 0, 0
-            idx = 0
-            # 2 * k iterations are required to traverse both A and B if needed.
-            for _ in range(2 * k):
-                if idx >= k:
-                    break
-                if bj < k and PB[i, bj] < PA[i, aj]:
-                    if IB[i, bj] not in overlap:
-                        tmp_P[idx] = PB[i, bj]
-                        tmp_I[idx] = IB[i, bj]
-                        idx += 1
-                    bj += 1
-                else:
-                    tmp_P[idx] = PA[i, aj]
-                    tmp_I[idx] = IA[i, aj]
-                    idx += 1
-                    aj += 1
-
-            PA[i] = tmp_P
-            IA[i] = tmp_I
-
-
-@njit
-def _merge_topk_ρI(ρA, ρB, IA, IB):
-    """
-    Merge two top-k pearson profiles `ρA` and `ρB`, and update `ρA` (in place).
-    When the inputs are 1D arrays, ρA[i] is updated if it is less than ρB[i] and
-    IA[i] != IB[i]. In such case, ρA[i] and IA[i] are replaced with ρB[i] and IB[i],
-    respectively. (Note that it might happen that IA[i]==IB[i] but ρA[i] != ρB[i].
-    This situation can occur if there is slight imprecision in numerical calculations.
-    In that case, we do not update ρA[i] and IA[i]. While updating ρA[i] and IA[i]
-    is harmless in this case, we avoid doing that so to be consistent with the merging
-    process when the inputs are 2D arrays)
-    When the inputs are 2D arrays, we always prioritize the values of `ρA` over
-    the values of `ρB` in case of ties. (i.e., values from `ρB` are always inserted
-    to the left of values from `ρA`). Also, update `IA` accordingly. In case of
-    overlapping values between two arrays IA[i] and IB[i], the ones in IB[i] (and
-    their corresponding values in ρB[i]) are ignored throughout the updating process
-    of IA[i] (and ρA[i]).
-
-    Unlike `_merge_topk_PI`, where `top-k` smallest values are kept, this function
-    keeps `top-k` largest values.
-
-    Parameters
-    ----------
-    ρA : numpy.ndarray
-        A (top-k) pearson profile where values in each row are sorted in ascending
-        order. `ρA` must be 1- or 2-dimensional.
-
-    ρB : numpy.ndarray
-        A (top-k) pearson profile, where values in each row are sorted in ascending
-        order. `ρB` must have the same shape as `ρA`.
-
-    IA : numpy.ndarray
-        A (top-k) matrix profile indices corresponding to `ρA`
-
-    IB : numpy.ndarray
-        A (top-k) matrix profile indices corresponding to `ρB`
-
-    Returns
-    -------
-    None
-    """
-    if ρA.ndim == 1:
-        mask = (ρB > ρA) & (IB != IA)
-        ρA[mask] = ρB[mask]
-        IA[mask] = IB[mask]
-    else:
-        k = ρA.shape[1]
-        tmp_ρ = np.empty(k, dtype=np.float64)
-        tmp_I = np.empty(k, dtype=np.int64)
-        last_idx = k - 1
-        for i in range(len(ρA)):
-            overlap = set(IB[i]).intersection(set(IA[i]))
-            aj, bj = last_idx, last_idx
-            idx = last_idx
-            # 2 * k iterations are required to traverse both A and B if needed.
-            for _ in range(2 * k):
-                if idx < 0:
-                    break
-                if bj >= 0 and ρB[i, bj] > ρA[i, aj]:
-                    if IB[i, bj] not in overlap:
-                        tmp_ρ[idx] = ρB[i, bj]
-                        tmp_I[idx] = IB[i, bj]
-                        idx -= 1
-                    bj -= 1
-                else:
-                    tmp_ρ[idx] = ρA[i, aj]
-                    tmp_I[idx] = IA[i, aj]
-                    idx -= 1
-                    aj -= 1
-
-            ρA[i] = tmp_ρ
-            IA[i] = tmp_I
-
-
-@njit
-def _shift_insert_at_index(a, idx, v, shift="right"):
-    """
-    If `shift=right` (default), all elements in `a[idx:]` are shifted to the right by
-    one element, `v` in inserted at index `idx` and the last element is discarded.
-    If `shift=left`, all elements in `a[:idx]` are shifted to the left by one element,
-    `v` in inserted at index `idx-1`, and the first element is discarded. In both cases,
-    `a` is updated in place and its length remains unchanged.
-
-    Note that all unrecognized `shift` inputs will default to `shift=right`.
-
-
-    Parameters
-    ----------
-    a : numpy.ndarray
-        A 1d array
-
-    idx : int
-        The index at which the value `v` should be inserted. This can be any
-        integer number from `0` to `len(a)`. When `idx=len(a)` and `shift="right"`,
-        OR when `idx=0` and `shift="left"`, then no change will occur on
-        the input array `a`.
-
-    v : float
-        The value that should be inserted into array `a` at index `idx`
-
-    shift : str, default "right"
-        The value that indicates whether the shifting of elements should be towards
-        the right or left. If `shift="right"` (default), all elements in `a[idx:]`
-        are shifted to the right by one element. If `shift="left"`, all elements
-        in `a[:idx]` are shifted to the left by one element.
-
-    Returns
-    -------
-    None
-    """
-    if shift == "left":
-        if 0 < idx <= len(a):
-            a[: idx - 1] = a[1:idx]
-            # elements were shifted to the left, thus the insertion index becomes
-            # `idx-1`
-            a[idx - 1] = v
-    else:
-        if 0 <= idx < len(a):
-            a[idx + 1 :] = a[idx:-1]
-            a[idx] = v
-
-
-def _check_P(P, threshold=1e-6):
-    """
-    Check if the 1-dimensional matrix profile values are too small and
-    log a warning the if true.
-
-    Parameters
-    ----------
-    P : numpy.ndarray
-        A 1-dimensional matrix profile
-
-    threshold : float, default 1e-6
-        A distance threshold
-
-    Returns
-    -------
-        None
-    """
-    if P.ndim != 1:
-        raise ValueError("`P` was {P.ndim}-dimensional and must be 1-dimensional")
-    if are_distances_too_small(P, threshold=threshold):  # pragma: no cover
-        msg = f"A large number of values in `P` are smaller than {threshold}.\n"
-        msg += "For a self-join, try setting `ignore_trivial=True`."
-        warnings.warn(msg)
-
-
-def _find_matches(
-    D, excl_zone, max_distance=None, max_matches=None, query_idx=None, atol=1e-8
-):
-    """
-    Find all matches of a query `Q` whose distance profile with `T` is `D`.
-
-    Parameters
-    ----------
-    D : numpy.ndarray
-        The distance profile of `Q` with `T`. It is a 1D numpy array of size
-        `len(T)-len(Q)+1`, where `D[i]` is the distance between query `Q` and
-        `T[i : i + len(Q)]`.
-
-    excl_zone : int
-        Size of the exclusion zone. That is, after finding the next-best-match
-        located at index `idx`, we ignore subsequences with start index in range
-        (idx -  excl_zone, idx + excl_zone + 1).
-
-    max_distance : float or function, default None
-        Maximum distance between `Q` and a subsequence `S` for `S` to be considered a
-        match.
-        If a function, then it has to be a function of one argument `D`, which will be
-        the distance profile of `Q` with `T` (a 1D numpy array of size `n-m+1`).
-        If None, this defaults to
-        `np.nanmax([np.nanmean(D) - 2 * np.nanstd(D), np.nanmin(D)])` (i.e. at
-        least the closest match will be returned).
-
-    max_matches : int, default None
-        The maximum amount of similar occurrences to be returned. The resulting
-        occurrences are sorted by distance, so a value of `10` means that the
-        indices of the most similar `10` subsequences is returned. If `None`, then all
-        occurrences are returned.
-
-    query_idx : int, default None
-        This is the index position along the time series, `T`, where the query
-        subsequence, `Q`, is located.
-        `query_idx` should only be used when the matrix profile is a self-join and
-        should be set to `None` for matrix profiles computed from AB-joins.
-        If `query_idx` is set to a specific integer value, then this will help ensure
-        that the self-match will be returned first.
-
-    atol : float, default 1e-8
-        The absolute tolerance parameter. This value will be added to `max_distance`
-        when comparing distances between subsequences.
-
-    Returns
-    -------
-    out : numpy.ndarray
-        The first column consists of values selected from `D`. These are the distances
-        of subsequences of `T` whose distances to `Q` are less than or equal to
-        `max_distance`, sorted by distance (lowest to highest). The second column
-        consists of the corresponding indices in `D`. These are in fact the start index
-        of susequences in `T` selected as the match of `Q`.
-
-    """
-    D = D.copy()
-    if max_distance is None:
-
-        def max_distance(D):
-            D_copy = D.copy().astype(np.float64)
-            D_copy[np.isinf(D_copy)] = np.nan
-            return np.nanmax(
-                [np.nanmean(D_copy) - 2.0 * np.nanstd(D_copy), np.nanmin(D_copy)]
-            )
-
-    if not isinstance(max_distance, float):
-        max_distance = max_distance(D)
-
-    if max_matches is None:
-        max_matches = np.inf
-
-    if query_idx is not None:
-        candidate_idx = query_idx
-    else:
-        candidate_idx = np.argmin(D)
-
-    matches = []
-    for _ in range(len(D)):
-        if (
-            D[candidate_idx] > atol + max_distance
-            or ~np.isfinite(D[candidate_idx])
-            or len(matches) >= max_matches
-        ):
-            break
-
-        matches.append([D[candidate_idx], candidate_idx])
-        apply_exclusion_zone(D, candidate_idx, excl_zone, np.inf)
-        candidate_idx = np.argmin(D)
-
-    return np.array(matches, dtype=object)
-
-
-@cuda.jit(device=True)
-def _gpu_searchsorted_left(a, v, bfs, nlevel):
-    """
-    A device function, equivalent to numpy.searchsorted(a, v, side='left')
-
-    Parameters
-    ----------
-    a : numpy.ndarray
-        1-dim array sorted in ascending order.
-
-    v : float
-        Value to insert into array `a`
-
-    bfs : numpy.ndarray
-        The breadth-first-search indices where the missing leaves of its corresponding
-        binary search tree are filled with -1.
-
-    nlevel : int
-        The number of levels in the binary search tree from which the array
-        `bfs` is obtained.
-
-    Returns
-    -------
-    idx : int
-        The index of the insertion point
-    """
-    n = a.shape[0]
-    idx = 0
-    for level in range(nlevel):
-        if v <= a[bfs[idx]]:
-            next_idx = 2 * idx + 1
-        else:
-            next_idx = 2 * idx + 2
-
-        if level == nlevel - 1 or bfs[next_idx] < 0:
-            if v <= a[bfs[idx]]:
-                idx = max(bfs[idx], 0)
-            else:
-                idx = min(bfs[idx] + 1, n)
-            break
-        idx = next_idx
-
-    return idx
-
-
-@cuda.jit(device=True)
-def _gpu_searchsorted_right(a, v, bfs, nlevel):
-    """
-    A device function, equivalent to numpy.searchsorted(a, v, side='right')
-
-    Parameters
-    ----------
-    a : numpy.ndarray
-        1-dim array sorted in ascending order.
-
-    v : float
-        Value to insert into array `a`
-
-    bfs : numpy.ndarray
-        The breadth-first-search indices where the missing leaves of its corresponding
-        binary search tree are filled with -1.
-
-    nlevel : int
-        The number of levels in the binary search tree from which the array
-        `bfs` is obtained.
-
-    Returns
-    -------
-    idx : int
-        The index of the insertion point
-    """
-    n = a.shape[0]
-    idx = 0
-    for level in range(nlevel):
-        if v < a[bfs[idx]]:
-            next_idx = 2 * idx + 1
-        else:
-            next_idx = 2 * idx + 2
-
-        if level == nlevel - 1 or bfs[next_idx] < 0:
-            if v < a[bfs[idx]]:
-                idx = max(bfs[idx], 0)
-            else:
-                idx = min(bfs[idx] + 1, n)
-            break
-        idx = next_idx
-
-    return idx
-
-
-def check_ignore_trivial(T_A, T_B, ignore_trivial):
-    """
-    Check inputs and verify the appropriateness for self-joins vs AB-joins and
-    provides relevant warnings.
-
-    Note that the warnings will output the first occurrence of matching warnings
-    for each location (module + line number) where the warning is issued
-
-    Parameters
-    ----------
-    T_A : numpy.ndarray
-        The time series or sequence for which to compute the matrix profile
-
-    T_B : numpy.ndarray
-        The time series or sequence that will be used to annotate T_A. For every
-        subsequence in T_A, its nearest neighbor in T_B will be recorded. Default is
-        `None` which corresponds to a self-join.
-
-    ignore_trivial : bool
-        Set to `True` if this is a self-join. Otherwise, for AB-join, set this
-        to `False`.
-
-    Returns
-    -------
-    ignore_trivial : bool
-        The (corrected) ignore_trivial value
-
-    Notes
-    -----
-    These warnings may be supresse by using a context manager
-    ```
-    import stumpy
-    import numpy as np
-    import warnings
-
-    T = np.random.rand(10_000)
-    m = 50
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message="Arrays T_A, T_B are equal")
-        for _ in range(5):
-            stumpy.stump(T, m, T, ignore_trivial=False)
-    ```
-    """
-    if ignore_trivial is False and are_arrays_equal(T_A, T_B):  # pragma: no cover
-        msg = "Arrays T_A, T_B are equal, which implies a self-join. "
-        msg += "Try setting `ignore_trivial = True`."
-        warnings.warn(msg)
-
-    if ignore_trivial and are_arrays_equal(T_A, T_B) is False:  # pragma: no cover
-        msg = "Arrays T_A, T_B are not equal, which implies an AB-join. "
-        msg += "`ignore_trivial` has been automatically set to `False`."
-        warnings.warn(msg)
-        ignore_trivial = False
-
-    return ignore_trivial
